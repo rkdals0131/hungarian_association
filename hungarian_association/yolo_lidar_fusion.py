@@ -3,8 +3,12 @@ import message_filters
 import rclpy
 from rclpy.node import Node
 from scipy.optimize import linear_sum_assignment
-from sensor_msgs.msg import PointCloud2
+
+# ***TO DO***
+# YOLOv8이 ROS2 에서 작동할 때 송출하는 메시지 타입, cone_detection 패키지가 퍼블리시하는 /sorted_cones 메시지 여기서 정의하고 받아와야 함
+# 보내는 좌표는 타입을 뭘로 하지? 받는거랑 다른 타입으로 또 만들어야 하나?
 from your_msgs.msg import YoloBboxes, ConePoints
+
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 class YoloLidarFusion(Node):
@@ -20,7 +24,7 @@ class YoloLidarFusion(Node):
         
         # Publisher for fused coordinates
         self.coord_pub = self.create_publisher(
-            ConePoints,  # Assuming we'll publish matched cone coordinates
+            ConePoints, 
             'fused_cone_coordinates',
             qos_profile
         )
@@ -46,10 +50,11 @@ class YoloLidarFusion(Node):
             queue_size=10,
             slop=0.1
         )
-        self.ats.registerCallback(self.callback)
         
-        # Parameters
-        self.max_matching_distance = 5.0  # Maximum allowed distance for matching (meters)
+        self.ats.registerCallback(self.hungarian_callback)
+        
+        # 비용함수에서 사용할, 이미지 상에서의 두 점 사이 ec distance threshold
+        self.max_matching_distance = 5.0  
         self.get_logger().info('YoloLidarFusion node initialized')
 
     @staticmethod
@@ -101,7 +106,7 @@ class YoloLidarFusion(Node):
         
         return cost_matrix
 
-    def callback(self, yolo_msg, cone_msg):
+    def hungarian_callback(self, yolo_msg, cone_msg):
         """Process synchronized YOLO and LiDAR cone detections."""
         try:
             # Convert messages to NumPy arrays
@@ -109,7 +114,7 @@ class YoloLidarFusion(Node):
             cone_points = self.convert_cone_msg_to_array(cone_msg)
             
             if len(yolo_bboxes) == 0 or len(cone_points) == 0:
-                self.get_logger().warn('No detections in one or both sensors')
+                self.get_logger().warn('ZERO detections in one or both sensors')
                 return
             
             # Compute cost matrix and find optimal assignment
@@ -131,7 +136,7 @@ class YoloLidarFusion(Node):
                         # Log matching information
                         self.get_logger().debug(
                             f'Matched YOLO bbox {r} with cone point {c}, '
-                            f'distance: {cost:.2f}m'
+                            f'ec distance: {cost:.2f}m'
                         )
             
             # Publish matched coordinates
