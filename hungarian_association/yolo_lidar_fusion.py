@@ -3,69 +3,153 @@ import message_filters
 import rclpy
 from rclpy.node import Node
 from scipy.optimize import linear_sum_assignment
-
-# ***TO DO***
+from sensor_msgs.msg import PointCloud2
 from your_msgs.msg import YoloBboxes, ConePoints
-from sensor_msgs import PointCloud2
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
-class YoloLidarFusion (Node):
+class YoloLidarFusion(Node):
     def __init__(self):
         super().__init__('hungarian_association_node')
-
-        #Publisher
-        self.coord_sub
-
-        #Subscriber
-        self.yolo_sub = message_filters.Subscriber('yolo_bboxes_topic', YoloBboxes)
-        self.cone_sub = message_filters.Subscriber('cone_points_topic', ConePoints)
-        self.ats = message_filters.ApproximateTimeSynchronizer([self.yolo_sub, self.cone_sub], queue_size=10, slop=0.1)        
+        
+        # QoS profile for better real-time performance
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+        
+        # Publisher for fused coordinates
+        self.coord_pub = self.create_publisher(
+            ConePoints,  # Assuming we'll publish matched cone coordinates
+            'fused_cone_coordinates',
+            qos_profile
+        )
+        
+        # Subscribers
+        self.yolo_sub = message_filters.Subscriber(
+            self,
+            YoloBboxes,
+            'yolo_bboxes_topic',
+            qos_profile=qos_profile
+        )
+        
+        self.cone_sub = message_filters.Subscriber(
+            self,
+            ConePoints,
+            'cone_points_topic',
+            qos_profile=qos_profile
+        )
+        
+        # Approximate time synchronization
+        self.ats = message_filters.ApproximateTimeSynchronizer(
+            [self.yolo_sub, self.cone_sub],
+            queue_size=10,
+            slop=0.1
+        )
         self.ats.registerCallback(self.callback)
         
+        # Parameters
+        self.max_matching_distance = 5.0  # Maximum allowed distance for matching (meters)
+        self.get_logger().info('YoloLidarFusion node initialized')
 
-    def compute_cost_matrix(yolo_bboxes, cone_points):
-        
-        num_boxes = yolo_bboxes.shape[0]  # N: number of YOLO bounding boxes
-        num_cones = cone_points.shape[0]  # M: number of cone points
+    @staticmethod
+    def convert_yolo_msg_to_array(yolo_msg):
+        """Convert YoloBboxes message to numpy array."""
+        boxes = []
+        for bbox in yolo_msg.bboxes:
+            boxes.append([
+                bbox.x_min,
+                bbox.y_min,
+                bbox.x_max,
+                bbox.y_max
+            ])
+        return np.array(boxes)
+
+    @staticmethod
+    def convert_cone_msg_to_array(cone_msg):
+        """Convert ConePoints message to numpy array."""
+        points = []
+        for point in cone_msg.points:
+            points.append([point.x, point.y, point.z])
+        return np.array(points)
+
+    def compute_cost_matrix(self, yolo_bboxes, cone_points):
+        num_boxes = yolo_bboxes.shape[0]
+        num_cones = cone_points.shape[0]
         cost_matrix = np.zeros((num_boxes, num_cones))
         
-        # Fill the cost matrix with the Euclidean distances.
+        # Fill the cost matrix with the Euclidean distances
         for i in range(num_boxes):
-            # Calculate the center of the i-th bounding box.
+            # Calculate the center of the i-th bounding box
             center_x = (yolo_bboxes[i, 0] + yolo_bboxes[i, 2]) / 2.0
             center_y = (yolo_bboxes[i, 1] + yolo_bboxes[i, 3]) / 2.0
             for j in range(num_cones):
-                cost_matrix[i, j] = np.linalg.norm([center_x - cone_points[j, 0],
-                                                    center_y - cone_points[j, 1]])
+                distance = np.linalg.norm([
+                    center_x - cone_points[j, 0],
+                    center_y - cone_points[j, 1]
+                ])
+                # Penalize matches beyond maximum distance
+                cost_matrix[i, j] = distance if distance < self.max_matching_distance else 1e6
         
-        # Pad the cost matrix to make it square.
+        # Pad the cost matrix to make it square
         if num_boxes < num_cones:
-            # Add dummy rows: number of rows to add = num_cones - num_boxes.
-            dummy_rows = np.zeros((num_cones - num_boxes, num_cones))
+            dummy_rows = np.full((num_cones - num_boxes, num_cones), 1e6)
             cost_matrix = np.vstack((cost_matrix, dummy_rows))
         elif num_boxes > num_cones:
-            # Add dummy columns: number of columns to add = num_boxes - num_cones.
-            dummy_cols = np.zeros((num_boxes, num_boxes - num_cones))
+            dummy_cols = np.full((num_boxes, num_boxes - num_cones), 1e6)
             cost_matrix = np.hstack((cost_matrix, dummy_cols))
         
         return cost_matrix
 
-    def callback(yolo_msg, cone_msg):
-        # Convert messages to NumPy arrays
-        yolo_bboxes = convert_yolo_msg_to_array(yolo_msg)
-        cone_points = convert_cone_msg_to_array(cone_msg)
-        cost_matrix = compute_cost_matrix(yolo_bboxes, cone_points)
-        row_ind, col_ind = linear_sum_assignment(cost_matrix)
-        # *****todo*****
-        # Process the matching results here 
-    
+    def callback(self, yolo_msg, cone_msg):
+        """Process synchronized YOLO and LiDAR cone detections."""
+        try:
+            # Convert messages to NumPy arrays
+            yolo_bboxes = self.convert_yolo_msg_to_array(yolo_msg)
+            cone_points = self.convert_cone_msg_to_array(cone_msg)
+            
+            if len(yolo_bboxes) == 0 or len(cone_points) == 0:
+                self.get_logger().warn('No detections in one or both sensors')
+                return
+            
+            # Compute cost matrix and find optimal assignment
+            cost_matrix = self.compute_cost_matrix(yolo_bboxes, cone_points)
+            row_ind, col_ind = linear_sum_assignment(cost_matrix)
+            
+            # Create message for matched coordinates
+            matched_msg = ConePoints()
+            matched_msg.header = cone_msg.header
+            
+            # Process matches
+            for r, c in zip(row_ind, col_ind):
+                if r < len(yolo_bboxes) and c < len(cone_points):
+                    cost = cost_matrix[r, c]
+                    if cost < self.max_matching_distance:
+                        # Add matched cone point to output message
+                        matched_msg.points.append(cone_msg.points[c])
+                        
+                        # Log matching information
+                        self.get_logger().debug(
+                            f'Matched YOLO bbox {r} with cone point {c}, '
+                            f'distance: {cost:.2f}m'
+                        )
+            
+            # Publish matched coordinates
+            self.coord_pub.publish(matched_msg)
+            
+        except Exception as e:
+            self.get_logger().error(f'Error in callback: {str(e)}')
+
 def main(args=None):
     rclpy.init(args=args)
     hungarian_association_node = YoloLidarFusion()
     try:
         rclpy.spin(hungarian_association_node)
+    except KeyboardInterrupt:
+        pass
     finally:
         hungarian_association_node.destroy_node()
-    rclpy.shutdown()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
