@@ -1,0 +1,34 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${default}",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/home/user1/glim/ros2_ws/install/glim_ros/include/**",
+        "/home/user1/glim/ros2_ws/install/glim/include/**",
+        "/home/user1/carla-ros-bridge/colcon_ws/install/carla_waypoint_types/include/**",
+        "/home/user1/carla-ros-bridge/colcon_ws/install/carla_ros_scenario_runner_types/include/**",
+        "/home/user1/carla-ros-bridge/colcon_ws/install/carla_ackermann_msgs/include/**",
+        "/home/user1/carla-ros-bridge/colcon_ws/install/carla_msgs/include/**",
+        "/home/user1/ouster_ws/install/ouster_ros/include/**",
+        "/home/user1/ouster_ws/install/ouster_sensor_msgs/include/**",
+        "/home/user1/ros2_fusion_ws/install/usb_cam/include/**",
+        "/home/user1/pcl_ws/install/cone_detection/include/**",
+        "/home/user1/nav2_ws/install/serial/include/**",
+        "/home/user1/nav2_ws/install/openslam_gmapping/include/**",
+        "/home/user1/ros2_ws/install/custom_interfaces/include/**",
+        "/opt/ros/humble/include/**",
+        "/home/user1/pcl_ws/src/cone_detection/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++14"
+    }
+  ],
+  "version": 4
+}
