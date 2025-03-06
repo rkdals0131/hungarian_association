@@ -97,6 +97,7 @@ class YoloLidarFusion(Node):
                 cost_matrix[i, j] = distance if distance < self.max_matching_distance else 1e6
         
         # Pad the cost matrix to make it square
+        # 1e6? or 0?
         if num_boxes < num_cones:
             dummy_rows = np.full((num_cones - num_boxes, num_cones), 1e6)
             cost_matrix = np.vstack((cost_matrix, dummy_rows))
