@@ -6,8 +6,9 @@ from scipy.optimize import linear_sum_assignment
 
 # ***TO DO***
 # YOLOv8이 ROS2 에서 작동할 때 송출하는 메시지 타입, cone_detection 패키지가 퍼블리시하는 /sorted_cones 메시지 여기서 정의하고 받아와야 함
-# 보내는 좌표는 타입을 뭘로 하지? 받는거랑 다른 타입으로 또 만들어야 하나?
-from your_msgs.msg import YoloBboxes, ConePoints
+# 보내는 좌표는 타입을 뭘로 하지? 받는거랑 다른 타입으로 또 만들어야 하나? ModifiedFloat32MultiArray에다가 헤더나 그런 레이아웃에 색깔(클래스 이름) 추가해야함
+from yolo_msgs.msg import DetectionArray
+from custom_interface.msg import ModifiedFloat32MultiArray
 
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
@@ -24,23 +25,23 @@ class YoloLidarFusion(Node):
         
         # Publisher for fused coordinates
         self.coord_pub = self.create_publisher(
-            ConePoints, 
-            'fused_cone_coordinates',
+            ModifiedFloat32MultiArray, 
+            'fused_sorted_cones',
             qos_profile
         )
         
         # Subscribers
         self.yolo_sub = message_filters.Subscriber(
             self,
-            YoloBboxes,
-            'yolo_bboxes_topic',
+            DetectionArray,
+            'detections',
             qos_profile=qos_profile
         )
         
         self.cone_sub = message_filters.Subscriber(
             self,
-            ConePoints,
-            'cone_points_topic',
+            ModifiedFloat32MultiArray,
+            'sorted_cones_time',
             qos_profile=qos_profile
         )
         
@@ -59,20 +60,20 @@ class YoloLidarFusion(Node):
 
     @staticmethod
     def convert_yolo_msg_to_array(yolo_msg):
-        """Convert YoloBboxes message to numpy array."""
+        """Convert DetectionArray message to numpy array."""
         boxes = []
-        for bbox in yolo_msg.bboxes:
+        for detection in yolo_msg.detections:
             boxes.append([
-                bbox.x_min,
-                bbox.y_min,
-                bbox.x_max,
-                bbox.y_max
+                detection.bbox.center.position.x,
+                detection.bbox.center.position.y,
+                detection.bbox.size.x,
+                detection.bbox.size.y
             ])
         return np.array(boxes)
 
     @staticmethod
     def convert_cone_msg_to_array(cone_msg):
-        """Convert ConePoints message to numpy array."""
+        """Convert ModifiedFloat32MultiArray message to numpy array."""
         points = []
         for point in cone_msg.points:
             points.append([point.x, point.y, point.z])
@@ -86,8 +87,8 @@ class YoloLidarFusion(Node):
         # Fill the cost matrix with the Euclidean distances
         for i in range(num_boxes):
             # Calculate the center of the i-th bounding box
-            center_x = (yolo_bboxes[i, 0] + yolo_bboxes[i, 2]) / 2.0
-            center_y = (yolo_bboxes[i, 1] + yolo_bboxes[i, 3]) / 2.0
+            center_x = yolo_bboxes[i, 0]
+            center_y = yolo_bboxes[i, 1]
             for j in range(num_cones):
                 distance = np.linalg.norm([
                     center_x - cone_points[j, 0],
@@ -122,23 +123,32 @@ class YoloLidarFusion(Node):
             cost_matrix = self.compute_cost_matrix(yolo_bboxes, cone_points)
             row_ind, col_ind = linear_sum_assignment(cost_matrix)
             
-            # Create message for matched coordinates
-            matched_msg = ConePoints()
+            # TODO: ModifiedFloat32MultiArray에 헤더나 그런 레이아웃에 색깔(클래스 이름) 추가해야함
+            # Create message for matched coordinates(TBD)
+            matched_msg = ModifiedFloat32MultiArray()
             matched_msg.header = cone_msg.header
             
-            # Process matches
-            for r, c in zip(row_ind, col_ind):
-                if r < len(yolo_bboxes) and c < len(cone_points):
-                    cost = cost_matrix[r, c]
-                    if cost < self.max_matching_distance:
-                        # Add matched cone point to output message
-                        matched_msg.points.append(cone_msg.points[c])
-                        
-                        # Log matching information
-                        self.get_logger().debug(
-                            f'Matched YOLO bbox {r} with cone point {c}, '
-                            f'ec distance: {cost:.2f}m'
-                        )
+            # Only include matched points and update class names
+            matched_points = []
+            matched_class_names = []
+            
+            for i, j in zip(row_ind, col_ind):
+                # Check if this is a valid match (cost is below threshold)
+                if i < len(yolo_bboxes) and j < len(cone_points) and cost_matrix[i, j] < self.max_matching_distance:
+                    # Add the LiDAR point
+                    matched_points.append(cone_msg.points[j])
+                    
+                    # Get class name from YOLO detection and associate it with this point
+                    class_name = yolo_msg.detections[i].class_name
+                    matched_class_names.append(class_name)
+                    
+                    self.get_logger().debug(f'Matched YOLO detection ({class_name}) with LiDAR cone at index {j}')
+            
+            matched_msg.points = matched_points
+            matched_msg.class_names = matched_class_names
+            
+            # Log summary of matching
+            self.get_logger().info(f'Matched {len(matched_points)} cones out of {len(yolo_bboxes)} YOLO detections and {len(cone_points)} LiDAR points')
             
             # Publish matched coordinates
             self.coord_pub.publish(matched_msg)
