@@ -1,0 +1,21 @@
+hungarian_association:
+  # Topic names
+  cones_topic: "/sorted_cones_time"
+  boxes_topic: "/detections"
+  output_topic: "/fused_sorted_cones"
+  
+  # Hungarian algorithm parameters
+  max_matching_distance: 5.0
+  cone_z_offset: -0.6
+  
+  # Calibration file paths
+  calibration:
+    config_folder: "/path/to/your/config/folder"
+    camera_extrinsic_calibration: "camera_extrinsic_calibration.yaml"
+    camera_intrinsic_calibration: "camera_intrinsic_calibration.yaml"
+  
+  # QoS settings
+  qos:
+    history_depth: 1
+    sync_slop: 0.1
+    sync_queue_size: 10 
