@@ -208,12 +208,12 @@ class YoloLidarFusion(Node):
                     center_y - cone_points[j, 1]
                 ])
                 # Penalize matches beyond maximum distance
-                cost_matrix[i, j] = distance if distance < self.max_matching_distance else 1e6
+                cost_matrix[i, j] = distance if distance < self.max_matching_distance else 0.0
         
         # Pad the cost matrix to make it square
         if num_boxes < num_cones:
             # Set cost to high value for dummy YOLO boxes (we prefer to keep LiDAR points as "Unknown")
-            dummy_rows = np.full((num_cones - num_boxes, num_cones), 1e6)
+            dummy_rows = np.full((num_cones - num_boxes, num_cones), 0.0)
             cost_matrix = np.vstack((cost_matrix, dummy_rows))
         elif num_boxes > num_cones:
             # Set cost to 0 for dummy LiDAR points (be "forgiving" for YOLO boxes without LiDAR match)
@@ -247,9 +247,9 @@ class YoloLidarFusion(Node):
             matched_msg.layout = cone_msg.layout
             matched_msg.data = list(cone_msg.data)  # Copy original data
             
-            # Create a class_name list with same length as number of cones
-            num_cones = cone_msg.layout.dim[0].size
-            class_names = ["Unknown"] * num_cones
+            # Create a class_names array with same length as number of cones
+            num_cones = matched_msg.layout.dim[0].size
+            matched_msg.class_names = ["Unknown"] * num_cones
             
             # Update class names for matched points
             valid_matches = 0
@@ -267,11 +267,8 @@ class YoloLidarFusion(Node):
                 
                 # Update the class name for this point
                 if original_idx < num_cones:
-                    class_names[original_idx] = yolo_class
+                    matched_msg.class_names[original_idx] = yolo_class
                     valid_matches += 1
-            
-            # Assign the list of class names to the message
-            matched_msg.class_name = class_names
             
             # Log summary of matching
             self.get_logger().info(f'Matched {valid_matches} cones out of {len(yolo_bboxes)} YOLO detections and {len(cone_image_points)} LiDAR points')

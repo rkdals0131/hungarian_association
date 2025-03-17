@@ -5,12 +5,12 @@ hungarian_association:
   output_topic: "/fused_sorted_cones"
   
   # Hungarian algorithm parameters
-  max_matching_distance: 5.0
+  max_matching_distance: 10.0
   cone_z_offset: -0.6
   
   # Calibration file paths
   calibration:
-    config_folder: "/path/to/your/config/folder"
+    config_folder: "/home/user1/ros2_ws/src/hungarian_association/config/"
     camera_extrinsic_calibration: "camera_extrinsic_calibration.yaml"
     camera_intrinsic_calibration: "camera_intrinsic_calibration.yaml"
   
