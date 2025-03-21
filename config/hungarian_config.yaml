@@ -5,8 +5,8 @@ hungarian_association:
   output_topic: "/fused_sorted_cones"
   
   # Hungarian algorithm parameters
-  max_matching_distance: 10.0
-  cone_z_offset: -0.6
+  max_matching_distance: 100.0
+  cone_z_offset: -0.4
   
   # Calibration file paths
   calibration:

@@ -3,7 +3,7 @@ import cv2
 import yaml
 import numpy as np
 import rclpy
-from typing import Tuple
+from typing import Tuple, List, Optional
 
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -145,17 +145,16 @@ class YoloLidarFusion(Node):
         """Convert ModifiedFloat32MultiArray message to numpy array and project to image plane."""
         # Process cones message
         cone_data = np.array(cone_msg.data, dtype=np.float32)
-        cone_image_points = np.array([])
         
         if cone_data.size == 0:
             self.get_logger().warn("Empty cones data.")
-            return cone_image_points
+            return np.array([]), np.array([])
         
         # Get number of points from layout
         num_points = cone_msg.layout.dim[0].size
         if num_points * 2 != cone_data.size:
             self.get_logger().error(f"Cone data size ({cone_data.size}) does not match layout dimensions ({num_points}*2).")
-            return cone_image_points
+            return np.array([]), np.array([])
         
         # Reshape to (N,2) array
         cones_xy = cone_data.reshape(num_points, 2)
@@ -170,24 +169,23 @@ class YoloLidarFusion(Node):
         cones_cam_h = cones_xyz_h @ self.T_lidar_to_cam.T
         cones_cam = cones_cam_h[:, :3]  # Extract 3D coordinates from homogeneous
         
-        # Filter points in front of camera
-        mask_cones_front = (cones_cam[:, 2] > 0.0)
-        cones_cam_front = cones_cam[mask_cones_front]
+        # Create array of original indices (all points)
+        original_indices = np.arange(num_points)
         
-        if cones_cam_front.shape[0] > 0:
-            # Project to image plane
+        # Project to image plane
+        if num_points > 0:
             rvec = np.zeros((3,1), dtype=np.float64)
             tvec = np.zeros((3,1), dtype=np.float64)
             cone_image_points, _ = cv2.projectPoints(
-                cones_cam_front.astype(np.float64),
+                cones_cam.astype(np.float64),
                 rvec, tvec,
                 self.camera_matrix,
                 self.dist_coeffs
             )
             cone_image_points = cone_image_points.reshape(-1, 2)
             
-            # Store original indices to map back to LiDAR points
-            original_indices = np.where(mask_cones_front)[0]
+            self.get_logger().debug(f"Projected {len(cone_image_points)} cones to image plane")
+            
             return cone_image_points, original_indices
         
         return np.array([]), np.array([])
@@ -208,7 +206,7 @@ class YoloLidarFusion(Node):
                     center_y - cone_points[j, 1]
                 ])
                 # Penalize matches beyond maximum distance
-                cost_matrix[i, j] = distance if distance < self.max_matching_distance else 0.0
+                cost_matrix[i, j] = distance if distance < self.max_matching_distance else 1e6
         
         # Pad the cost matrix to make it square
         if num_boxes < num_cones:
@@ -241,26 +239,35 @@ class YoloLidarFusion(Node):
             cost_matrix = self.compute_cost_matrix(yolo_bboxes, cone_image_points)
             row_ind, col_ind = linear_sum_assignment(cost_matrix)
             
+            # Debug log matching results
+            self.get_logger().debug(f"Hungarian matching results - row indices: {row_ind}, col indices: {col_ind}")
+            
             # Create new message for matched coordinates
             matched_msg = ModifiedFloat32MultiArray()
             matched_msg.header = cone_msg.header
             matched_msg.layout = cone_msg.layout
             matched_msg.data = list(cone_msg.data)  # Copy original data
             
-            # Create a class_names array with same length as number of cones
+            # Create and initialize matched class array before any matching
             num_cones = matched_msg.layout.dim[0].size
             matched_msg.class_names = ["Unknown"] * num_cones
+            
+            # Create a debug array to track which indices were matched
+            matched_indices = [-1] * num_cones
             
             # Update class names for matched points
             valid_matches = 0
             for i, j in zip(row_ind, col_ind):
-                # Skip if matching cost exceeds threshold or if the match involves dummy elements
+                # Skip if matching cost exceeds threshold or if match involves dummy elements
                 if (i >= len(yolo_bboxes) or j >= len(cone_image_points) or 
                     cost_matrix[i, j] >= self.max_matching_distance):
                     continue
                     
                 # Get original LiDAR point index
                 original_idx = original_indices[j]
+                
+                # Store matched index for debugging
+                matched_indices[original_idx] = i
                 
                 # Get class name from YOLO detection
                 yolo_class = yolo_msg.detections[i].class_name
@@ -269,9 +276,24 @@ class YoloLidarFusion(Node):
                 if original_idx < num_cones:
                     matched_msg.class_names[original_idx] = yolo_class
                     valid_matches += 1
+                    
+                    # Log detailed information about this match for debugging
+                    self.get_logger().debug(
+                        f"Match: YOLO idx={i}, img point idx={j}, original lidar idx={original_idx}, "
+                        f"class={yolo_class}, cost={cost_matrix[i, j]:.2f}, "
+                        f"image pos=({cone_image_points[j][0]:.1f}, {cone_image_points[j][1]:.1f}), "
+                        f"bbox center=({yolo_bboxes[i][0]:.1f}, {yolo_bboxes[i][1]:.1f})"
+                    )
+            
+            # Log which indices were matched to help diagnose issues
+            self.get_logger().debug(f"Matched indices (lidar_idx -> yolo_idx): {list(enumerate(matched_indices))}")
+            self.get_logger().debug(f"Final class assignments: {list(enumerate(matched_msg.class_names))}")
             
             # Log summary of matching
-            self.get_logger().info(f'Matched {valid_matches} cones out of {len(yolo_bboxes)} YOLO detections and {len(cone_image_points)} LiDAR points')
+            self.get_logger().info(
+                f'Matched {valid_matches} cones out of {len(yolo_bboxes)} YOLO detections, '
+                f'{len(cone_image_points)} projected LiDAR points, and {num_cones} total LiDAR points'
+            )
             
             # Publish matched coordinates
             self.coord_pub.publish(matched_msg)
