@@ -229,74 +229,47 @@ class YoloLidarFusion(Node):
             # Project cone points to image plane and get original indices
             cone_image_points, original_indices = self.convert_cone_msg_to_array(cone_msg)
             
+            # 매칭된 콘만 저장할 새로운 메시지 생성
+            filtered_msg = ModifiedFloat32MultiArray()
+            filtered_msg.header = cone_msg.header
+            filtered_msg.layout = cone_msg.layout
+            filtered_msg.class_names = []
+            filtered_msg.data = []
+            
             if len(yolo_bboxes) == 0 or len(cone_image_points) == 0:
                 self.get_logger().warn('ZERO detections in one or both sensors')
-                # If no matches, just republish the original message
-                self.coord_pub.publish(cone_msg)
+                self.coord_pub.publish(filtered_msg)  # 빈 메시지 발행
                 return
             
-            # Compute cost matrix and find optimal assignment
+            # 코스트 매트릭스 계산 및 매칭
             cost_matrix = self.compute_cost_matrix(yolo_bboxes, cone_image_points)
             row_ind, col_ind = linear_sum_assignment(cost_matrix)
             
-            # Debug log matching results
-            self.get_logger().debug(f"Hungarian matching results - row indices: {row_ind}, col indices: {col_ind}")
-            
-            # Create new message for matched coordinates
-            matched_msg = ModifiedFloat32MultiArray()
-            matched_msg.header = cone_msg.header
-            matched_msg.layout = cone_msg.layout
-            matched_msg.data = list(cone_msg.data)  # Copy original data
-            
-            # Create and initialize matched class array before any matching
-            num_cones = matched_msg.layout.dim[0].size
-            matched_msg.class_names = ["Unknown"] * num_cones
-            
-            # Create a debug array to track which indices were matched
-            matched_indices = [-1] * num_cones
-            
-            # Update class names for matched points
-            valid_matches = 0
+            # 매칭된 포인트만 필터링
             for i, j in zip(row_ind, col_ind):
-                # Skip if matching cost exceeds threshold or if match involves dummy elements
-                if (i >= len(yolo_bboxes) or j >= len(cone_image_points) or 
-                    cost_matrix[i, j] >= self.max_matching_distance):
-                    continue
+                # YOLO 박스와 매칭되고 최대 거리 이내인 경우만 선택
+                if (i < len(yolo_bboxes) and j < len(cone_image_points) and 
+                    cost_matrix[i, j] < self.max_matching_distance):
                     
-                # Get original LiDAR point index
-                original_idx = original_indices[j]
-                
-                # Store matched index for debugging
-                matched_indices[original_idx] = i
-                
-                # Get class name from YOLO detection
-                yolo_class = yolo_msg.detections[i].class_name
-                
-                # Update the class name for this point
-                if original_idx < num_cones:
-                    matched_msg.class_names[original_idx] = yolo_class
-                    valid_matches += 1
+                    original_idx = original_indices[j]
+                    # 원본 데이터에서 해당 콘의 x, y 좌표 추출
+                    original_x = cone_msg.data[original_idx * 2]
+                    original_y = cone_msg.data[original_idx * 2 + 1]
                     
-                    # Log detailed information about this match for debugging
-                    self.get_logger().debug(
-                        f"Match: YOLO idx={i}, img point idx={j}, original lidar idx={original_idx}, "
-                        f"class={yolo_class}, cost={cost_matrix[i, j]:.2f}, "
-                        f"image pos=({cone_image_points[j][0]:.1f}, {cone_image_points[j][1]:.1f}), "
-                        f"bbox center=({yolo_bboxes[i][0]:.1f}, {yolo_bboxes[i][1]:.1f})"
-                    )
+                    # 필터링된 메시지에 추가
+                    filtered_msg.data.extend([original_x, original_y])
+                    filtered_msg.class_names.append(yolo_msg.detections[i].class_name)
             
-            # Log which indices were matched to help diagnose issues
-            self.get_logger().debug(f"Matched indices (lidar_idx -> yolo_idx): {list(enumerate(matched_indices))}")
-            self.get_logger().debug(f"Final class assignments: {list(enumerate(matched_msg.class_names))}")
+            # 레이아웃 크기 업데이트
+            filtered_msg.layout.dim[0].size = len(filtered_msg.class_names)
             
-            # Log summary of matching
+            # 필터링된 메시지 발행
+            self.coord_pub.publish(filtered_msg)
+            
             self.get_logger().info(
-                f'Matched {valid_matches} cones out of {len(yolo_bboxes)} YOLO detections, '
-                f'{len(cone_image_points)} projected LiDAR points, and {num_cones} total LiDAR points'
+                f'Published {len(filtered_msg.class_names)} matched cones out of '
+                f'{len(cone_image_points)} LiDAR detections and {len(yolo_bboxes)} YOLO detections'
             )
-            
-            # Publish matched coordinates
-            self.coord_pub.publish(matched_msg)
             
         except Exception as e:
             self.get_logger().error(f'Error in callback: {str(e)}')
